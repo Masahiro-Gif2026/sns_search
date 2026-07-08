@@ -1,0 +1,6 @@
+# sns_search — 依存ライブラリ
+# インストール:  pip install -r requirements.txt
+
+requests>=2.31.0                  # HTTP クライアント (Serper.dev の呼び出し)
+python-dotenv>=1.0.0              # .env ファイルの読み込み
+google-generativeai>=0.7.0        # Gemini API 公式クライアント
