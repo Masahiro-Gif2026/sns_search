@@ -8,6 +8,11 @@
 .env.local
 .env.*.local
 
+# --- Streamlit の Secrets (APIキー・パスワード) ---
+# ローカルで動作確認する場合に作成される。commit 厳禁
+.streamlit/secrets.toml
+streamlit_app/.streamlit/secrets.toml
+
 # --- 実行時に生成されるファイル ---
 report.html
 report_*.html
