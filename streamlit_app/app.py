@@ -69,16 +69,40 @@ def _get_secret(name: str) -> str:
     return val
 
 
-PLATFORMS = {"X": "twitter.com", "Instagram": "instagram.com"}
+PLATFORMS = ["X", "Instagram"]
+
+
+# ────────────────────────────────────────────────────────
+# 検索クエリの組み立て(プラットフォームごとに最適化)
+# ────────────────────────────────────────────────────────
+def build_search_query(query: str, platform: str, days: int) -> str:
+    """
+    プラットフォームごとに検索精度が上がるようクエリを組み立てる。
+
+    - X: 旧twitter.com と 新x.com の両方を対象とし、`inurl:status` で
+         個別ツイートURL に絞る(プロフィールページ・検索結果ページを除外)
+    - Instagram: 個別投稿(/p/) とリール(/reel/) に絞る
+    """
+    date_limit = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    if platform == "X":
+        return (
+            f'(site:x.com OR site:twitter.com) inurl:status '
+            f'"{query}" after:{date_limit}'
+        )
+    if platform == "Instagram":
+        return (
+            f'site:instagram.com (inurl:/p/ OR inurl:/reel/) '
+            f'"{query}" after:{date_limit}'
+        )
+    return f'"{query}" after:{date_limit}'
 
 
 # ────────────────────────────────────────────────────────
 # Serper で SNS を検索
 # ────────────────────────────────────────────────────────
-def search_serper(query: str, site: str, days: int, api_key: str) -> list:
+def search_serper(query: str, platform: str, days: int, api_key: str) -> list:
     url = "https://google.serper.dev/search"
-    date_limit = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    search_q = f'site:{site} "{query}" after:{date_limit}'
+    search_q = build_search_query(query, platform, days)
     payload = json.dumps({"q": search_q})
     headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
     try:
@@ -86,7 +110,7 @@ def search_serper(query: str, site: str, days: int, api_key: str) -> list:
         res.raise_for_status()
         return res.json().get("organic", [])
     except Exception as e:
-        st.warning(f"⚠️ 検索エラー ({site}): {e}")
+        st.warning(f"⚠️ 検索エラー ({platform}): {e}")
         return []
 
 
@@ -178,8 +202,8 @@ if search:
     with st.spinner("Serper で X と Instagram を検索中..."):
         with ThreadPoolExecutor(max_workers=len(PLATFORMS)) as ex:
             futures = {
-                name: ex.submit(search_serper, query, domain, days, serper_key)
-                for name, domain in PLATFORMS.items()
+                name: ex.submit(search_serper, query, name, days, serper_key)
+                for name in PLATFORMS
             }
             all_results = {name: fut.result() for name, fut in futures.items()}
 
