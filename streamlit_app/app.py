@@ -80,14 +80,17 @@ def build_search_query(query: str, platform: str, days: int) -> str:
     プラットフォームごとに検索精度が上がるようクエリを組み立てる。
 
     - X: 旧twitter.com と 新x.com の両方を対象とし、`inurl:status` で
-         個別ツイートURL に絞る(プロフィールページ・検索結果ページを除外)
-    - Instagram: 個別投稿(/p/) とリール(/reel/) に絞る
+         個別ツイートURL に絞る。X は Google がインデックス化している投稿数が
+         少ないため、完全一致フレーズではなく AND検索(引用符なし)で候補を広げ、
+         ノイズは AI の関連度スコアで振り分ける。
+    - Instagram: 個別投稿(/p/) とリール(/reel/) に絞り、完全一致フレーズで検索。
     """
     date_limit = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     if platform == "X":
+        # X はダブルクォートを付けず、AND検索で候補を増やす
         return (
             f'(site:x.com OR site:twitter.com) inurl:status '
-            f'"{query}" after:{date_limit}'
+            f'{query} after:{date_limit}'
         )
     if platform == "Instagram":
         return (
