@@ -117,7 +117,8 @@ def search_serper(query: str, platform: str, days: int, api_key: str) -> list:
 # ────────────────────────────────────────────────────────
 # Gemini で一括判定 (バッチ)
 # ────────────────────────────────────────────────────────
-def classify_batch(posts: list, api_key: str) -> list:
+def classify_batch(posts: list, api_key: str, query: str) -> list:
+    """検索キーワードとの関連度(relevance_score)、質(trust_score)、無料か、要約 を一括で返す。"""
     if not posts:
         return []
 
@@ -131,21 +132,38 @@ def classify_batch(posts: list, api_key: str) -> list:
         {"id": i, "text": f"{p.get('title', '')} {p.get('snippet', '')}"}
         for i, p in enumerate(posts)
     ]
-    prompt = f"""以下のSNS投稿リストを分析し、JSON配列のみで返してください。
-配列の各要素は、対応する id の投稿の分析結果です。
+    prompt = f"""以下のSNS投稿リストを、検索キーワード「{query}」の観点で分析し、
+JSON配列のみで返してください。配列の各要素は、対応する id の投稿の分析結果です。
+
+【判定基準】
+- relevance_score: 「{query}」と本当に関連する内容か。単に文字が一致するだけで内容が無関係な投稿は 1〜2 と厳しく採点。文字が完全一致しなくても内容が本質的に関連していれば 4〜5。
+- trust_score: 投稿の質・信頼性(スパム/宣伝色が薄く、情報として有益)
+- is_free: 投稿内で紹介されている情報や機会が無料かどうか
+- summary: 15文字以内での要約
 
 投稿リスト:
 {json.dumps(items, ensure_ascii=False, indent=2)}
 
 返却形式(この配列のみ・前後に文を付けない):
 [
-  {{"id": 0, "trust_score": 1〜5の整数, "is_free": true/false, "summary": "15文字以内の要約"}},
+  {{
+    "id": 0,
+    "relevance_score": 1〜5の整数,
+    "trust_score": 1〜5の整数,
+    "is_free": true/false,
+    "summary": "15文字以内の要約"
+  }},
   ...
 ]
 """
     body = {"contents": [{"parts": [{"text": prompt}]}]}
 
-    default = lambda: {"trust_score": 3, "is_free": False, "summary": "判定なし"}
+    default = lambda: {
+        "relevance_score": 3,
+        "trust_score": 3,
+        "is_free": False,
+        "summary": "判定なし",
+    }
 
     try:
         res = requests.post(url, json=body, timeout=60)
@@ -166,6 +184,13 @@ def classify_batch(posts: list, api_key: str) -> list:
 with st.sidebar:
     st.markdown("### 検索オプション")
     days = st.slider("直近◯日以内の投稿を対象", 1, 30, 7)
+    min_relevance = st.slider(
+        "最低関連度 ★以上を表示",
+        min_value=1, max_value=5, value=3,
+        help="キーワードとの関連度がこの値未満の投稿は隠します。"
+             "検索結果の精度を上げたいときは 3〜4 を推奨。"
+             "AI判定をスキップした場合は無視されます。",
+    )
     skip_ai = st.checkbox("AI判定をスキップ (処理を速くする)", value=False)
 
     st.markdown("---")
@@ -221,23 +246,51 @@ if search:
     ai_results = [None] * len(flat)
     if not skip_ai:
         with st.spinner(f"Gemini で {len(flat)} 件をまとめて判定中..."):
-            ai_results = classify_batch([p for _, p in flat], gemini_key)
+            ai_results = classify_batch([p for _, p in flat], gemini_key, query)
+
+    # 関連度でソート + フィルタ
+    def _score(item):
+        _, ai = item
+        if not ai:
+            return (3, 3)
+        try:
+            return (int(ai.get("relevance_score", 3)), int(ai.get("trust_score", 3)))
+        except (TypeError, ValueError):
+            return (3, 3)
+
+    paired = list(zip(flat, ai_results))
+    if not skip_ai:
+        paired.sort(key=_score, reverse=True)
+        visible = [
+            (post, ai) for post, ai in paired
+            if not ai or int(ai.get("relevance_score", 3)) >= min_relevance
+        ]
+        hidden_count = len(paired) - len(visible)
+    else:
+        visible = paired
+        hidden_count = 0
 
     # サマリバー
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.metric("検索結果", f"{len(flat)} 件")
+        st.metric("表示中", f"{len(visible)} 件", delta=f"全 {len(paired)} 件中")
     with c2:
-        useful = sum(1 for a in ai_results if a and a.get("trust_score", 0) >= 4)
-        st.metric("★4以上", f"{useful} 件")
+        relevant = sum(1 for _, a in visible if a and a.get("relevance_score", 0) >= 4)
+        st.metric("関連度 ★4以上", f"{relevant} 件")
     with c3:
-        free = sum(1 for a in ai_results if a and a.get("is_free"))
+        free = sum(1 for _, a in visible if a and a.get("is_free"))
         st.metric("無料情報", f"{free} 件")
+
+    if hidden_count > 0:
+        st.caption(
+            f"🔎 関連度 ★{min_relevance} 未満の {hidden_count} 件を非表示にしています。"
+            f"すべて見たい場合は、左サイドバーの「最低関連度」を 1 に下げてください。"
+        )
 
     st.markdown("---")
 
     # 結果カード
-    for (plat, post), ai in zip(flat, ai_results):
+    for (plat, post), ai in visible:
         color = "#000000" if plat == "X" else "#E1306C"
         with st.container(border=True):
             top1, top2 = st.columns([1, 8])
@@ -254,16 +307,22 @@ if search:
             st.write(post.get("snippet", ""))
 
             if ai:
-                try:
-                    stars = "★" * int(ai.get("trust_score", 3))
-                except (TypeError, ValueError):
-                    stars = "★★★"
+                def _stars(key: str, default: int = 3) -> str:
+                    try:
+                        return "★" * int(ai.get(key, default))
+                    except (TypeError, ValueError):
+                        return "★" * default
+
+                rel_stars = _stars("relevance_score")
+                trust_stars = _stars("trust_score")
                 free_badge = "🆓 無料" if ai.get("is_free") else ""
                 st.markdown(
                     f"<div style='background:#e8f0fe;padding:10px 14px;"
                     f"border-radius:6px;font-size:14px;margin:6px 0;'>"
-                    f"<b>AIの要約:</b> {ai.get('summary', '')} {stars} {free_badge}"
-                    f"</div>",
+                    f"<b>AIの要約:</b> {ai.get('summary', '')} {free_badge}"
+                    f"<br><span style='color:#555;font-size:13px;'>"
+                    f"🎯 関連度: {rel_stars}  ／  📊 質: {trust_stars}"
+                    f"</span></div>",
                     unsafe_allow_html=True,
                 )
 
